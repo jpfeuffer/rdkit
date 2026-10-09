@@ -29,7 +29,15 @@ std::vector<RDKit::MOL_SPTR_VECT> ConvertToVect(nb::object bbs) {
   for (nb::handle row_handle : bbs) {
     RDKit::MOL_SPTR_VECT reacts;
     for (nb::handle mol_handle : row_handle) {
-      reacts.push_back(RDKit::ROMOL_SPTR(nb::cast<RDKit::ROMol *>(mol_handle), [](RDKit::ROMol *) {}));
+      auto *mol = nb::cast<RDKit::ROMol *>(mol_handle);
+      // the C++ side (e.g. EnumerateLibrary) may outlive the Python molecule,
+      // so share ownership with it like the boost.python wrapper does
+      PyObject *pyMol = mol_handle.ptr();
+      Py_INCREF(pyMol);
+      reacts.push_back(RDKit::ROMOL_SPTR(mol, [pyMol](RDKit::ROMol *) {
+        nb::gil_scoped_acquire gil;
+        Py_DECREF(pyMol);
+      }));
     }
     vect.push_back(std::move(reacts));
   }
