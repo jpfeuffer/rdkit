@@ -662,5 +662,25 @@ class TestCase(unittest.TestCase):
     self.assertEqual(products, ['CCCCCCNC(C)=O', 'CC(=O)NC1CC1'])
     del filler
 
+  def testEnumerateLibraryReleasesReagents(self):
+    log("testEnumerateLibraryReleasesReagents")
+    rxn = rdChemReactions.ReactionFromSmarts(
+      '[C:1](=[O:2])[OH].[N;!H0:3]>>[C:1](=[O:2])[N:3]')
+    acid = Chem.MolFromSmiles('CC(=O)O')
+    amine = Chem.MolFromSmiles('NCC')
+    unmatched = Chem.MolFromSmiles('CCC')
+    mols = (acid, amine, unmatched)
+    refcounts = lambda: [sys.getrefcount(m) for m in mols]
+    before = refcounts()
+
+    library = rdChemReactions.EnumerateLibrary(rxn, [[acid], [amine, unmatched]])
+    # reagents rejected by the reaction are not kept
+    self.assertEqual(refcounts()[2], before[2])
+    self.assertEqual(len(list(library)), 1)
+
+    del library
+    gc.collect()
+    self.assertEqual(refcounts(), before)
+
 if __name__ == '__main__':
   unittest.main()
