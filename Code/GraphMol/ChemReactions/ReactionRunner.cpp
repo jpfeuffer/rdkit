@@ -206,8 +206,9 @@ std::string labelledMatchSmiles(const ROMol &reactant,
                                 int mapNumOffset) {
   RWMol labelled(reactant);
   for (const auto &[queryIdx, molIdx] : match) {
-    labelled.getAtomWithIdx(molIdx)->setAtomMapNum(mapNumOffset + queryIdx +
-                                                   1);
+    // labels can exceed the usual 999 limit; they never leave this copy
+    labelled.getAtomWithIdx(molIdx)->setAtomMapNum(
+        mapNumOffset + queryIdx + 1, false);
   }
   labelled.updatePropertyCache(false);
   return MolToSmiles(labelled);

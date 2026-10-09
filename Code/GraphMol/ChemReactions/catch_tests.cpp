@@ -970,6 +970,8 @@ TEST_CASE("symmetric dedup keeps matches not related by one symmetry",
       {"[NH2:1]>>[N:1]C(=O)C", "N[C@@H]1CCCC[C@H]1N", 1},
       {"[NH2:1]>>[N:1]C", "NCCN", 1},
       {"[cH:1]>>[c:1]F", "c1ccccc1", 1},
+      // labels for the exact check go above the reagent's own map numbers
+      {"[NH2:1]>>[N:1]C", "NCC(C[CH3:999])CN", 1},
   };
   for (const auto &testCase : cases) {
     INFO(testCase.smarts << " " << testCase.reagent);
