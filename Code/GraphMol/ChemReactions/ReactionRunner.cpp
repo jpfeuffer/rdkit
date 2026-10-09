@@ -1571,8 +1571,9 @@ void applyReactantGraft(RWMOL_SPTR product, Conformer *productConf,
   }
 
   for (unsigned int atomIdx : graft.anchorAtomIdxs) {
-    auto *newAtom = cloneAtomForProduct(*graft.iso->getAtomWithIdx(atomIdx));
-    product->replaceAtom(atomIdx, newAtom, false, false);
+    // replaceAtom() stores a copy
+    product->replaceAtom(atomIdx, graft.iso->getAtomWithIdx(atomIdx), false,
+                         false);
   }
 
   for (unsigned int atomIdx = graft.templateAtomCount;
@@ -1588,11 +1589,11 @@ void applyReactantGraft(RWMOL_SPTR product, Conformer *productConf,
   std::vector<std::pair<unsigned int, const Bond *>> stereoBondsToRemap;
 
   for (unsigned int bondIdx : graft.anchorBondIdxs) {
-    const auto *isoBond = graft.iso->getBondWithIdx(bondIdx);
-    auto *newBond = cloneBondForProduct(*isoBond);
-    // keepSGroups=true matches the original setReactantBondPropertiesToProduct
-    // path so any SGroup bond membership in the product template is preserved.
-    product->replaceBond(bondIdx, newBond, false, true);
+    auto *isoBond = graft.iso->getBondWithIdx(bondIdx);
+    // replaceBond() stores a copy. keepSGroups=true matches the original
+    // setReactantBondPropertiesToProduct path so any SGroup bond membership in
+    // the product template is preserved.
+    product->replaceBond(bondIdx, isoBond, false, true);
     if (isoBond->getStereoAtoms().size() == 2) {
       stereoBondsToRemap.emplace_back(bondIdx, isoBond);
     }
