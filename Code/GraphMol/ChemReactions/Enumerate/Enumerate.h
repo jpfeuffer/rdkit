@@ -90,12 +90,6 @@ struct RDKIT_CHEMREACTIONS_EXPORT EnumerationParams {
   bool dedupeSymmetricMatches{false};
   ReactantCacheMode cacheMode{ReactantCacheMode::None};
   EnumerationParams() {}
-
-  EnumerationParams(const EnumerationParams &rhs)
-      : reagentMaxMatchCount(rhs.reagentMaxMatchCount),
-        sanePartialProducts(rhs.sanePartialProducts),
-        dedupeSymmetricMatches(rhs.dedupeSymmetricMatches),
-        cacheMode(rhs.cacheMode) {}
 };
 
 //!  Helper function, remove reagents that are incompatible
