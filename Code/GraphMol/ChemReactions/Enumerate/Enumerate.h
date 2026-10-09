@@ -145,17 +145,17 @@ RDKIT_CHEMREACTIONS_EXPORT EnumerationTypes::BBS removeNonmatchingReagents(
 
 class RDKIT_CHEMREACTIONS_EXPORT EnumerateLibrary
     : public EnumerateLibraryBase {
-  bool m_dedupeSymmetricMatches{false};
+  EnumerationParams m_params;
   ReactantMatchCache m_matchCache;
-  ReactantCacheMode m_cacheMode{ReactantCacheMode::None};
   ReactionRunnerUtils::ReactantGraftCache m_graftCache;
   EnumerationTypes::BBS m_bbs;
 
+  bool usesMatchCache() const;
+
  public:
-  EnumerateLibrary()
-      : EnumerateLibraryBase(), m_dedupeSymmetricMatches(false), m_bbs() {}
+  EnumerateLibrary() : EnumerateLibraryBase(), m_params(), m_bbs() {}
   EnumerateLibrary(const std::string &s)
-      : EnumerateLibraryBase(), m_dedupeSymmetricMatches(false), m_bbs() {
+      : EnumerateLibraryBase(), m_params(), m_bbs() {
     initFromString(s);
   }
 
@@ -172,9 +172,11 @@ class RDKIT_CHEMREACTIONS_EXPORT EnumerateLibrary
   // the input as it is only those compatible with the reaction.
   const EnumerationTypes::BBS &getReagents() const { return m_bbs; }
 
-  bool getDedupeSymmetricMatches() const { return m_dedupeSymmetricMatches; }
+  bool getDedupeSymmetricMatches() const {
+    return m_params.dedupeSymmetricMatches;
+  }
 
-  ReactantCacheMode getCacheMode() const { return m_cacheMode; }
+  ReactantCacheMode getCacheMode() const { return m_params.cacheMode; }
 
   size_t getMatchCacheSize() const { return m_matchCache.size(); }
 
@@ -205,8 +207,8 @@ class RDKIT_CHEMREACTIONS_EXPORT EnumerateLibrary
       }
     }
 
-    ar & m_dedupeSymmetricMatches;
-    int cacheModeInt = static_cast<int>(m_cacheMode);
+    ar & m_params.dedupeSymmetricMatches;
+    int cacheModeInt = static_cast<int>(m_params.cacheMode);
     ar & cacheModeInt;
   }
   template <class Archive>
@@ -230,14 +232,14 @@ class RDKIT_CHEMREACTIONS_EXPORT EnumerateLibrary
       }
     }
 
+    // reagentMaxMatchCount and sanePartialProducts were already applied to
+    // m_bbs at construction, so only the enumeration-time options are stored
+    m_params = EnumerationParams();
     if (version >= 1) {
-      ar & m_dedupeSymmetricMatches;
+      ar & m_params.dedupeSymmetricMatches;
       int cacheModeInt;
       ar & cacheModeInt;
-      m_cacheMode = static_cast<ReactantCacheMode>(cacheModeInt);
-    } else {
-      m_dedupeSymmetricMatches = false;
-      m_cacheMode = ReactantCacheMode::None;
+      m_params.cacheMode = static_cast<ReactantCacheMode>(cacheModeInt);
     }
     m_matchCache.clear();
     m_graftCache.clear();

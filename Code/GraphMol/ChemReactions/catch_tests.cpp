@@ -513,8 +513,9 @@ TEST_CASE("graft cache products match uncached",
       const auto uncached = rxn->runReactants(reactants);
       ReactantMatchCache matchCache;
       ReactionRunnerUtils::ReactantGraftCache graftCache;
-      const auto cached =
-          run_Reactants(*rxn, reactants, matchCache, graftCache);
+      const auto cached = run_Reactants(
+          *rxn, reactants,
+          {.matchCache = &matchCache, .graftCache = &graftCache});
       CHECK(collectCanonicalIsomericSmiles(cached) == testCase.expected);
       CHECK(collectCanonicalIsomericSmiles(cached) ==
             collectCanonicalIsomericSmiles(uncached));
@@ -538,7 +539,8 @@ TEST_CASE("graft cache reused across combinations",
 
   ReactantMatchCache matchCache;
   ReactionRunnerUtils::ReactantGraftCache graftCache;
-  const auto products = run_Reactants(*rxn, reactants, matchCache, graftCache);
+  const auto products = run_Reactants(
+      *rxn, reactants, {.matchCache = &matchCache, .graftCache = &graftCache});
 
   // Two reactive nitrogens => two products.
   CHECK(products.size() == 2);
@@ -564,12 +566,14 @@ TEST_CASE("graft cache key separates reagents and reuses identity",
   ReactionRunnerUtils::ReactantGraftCache graftCache;
 
   MOL_SPTR_VECT firstReactants = {acidA, amine};
-  run_Reactants(*rxn, firstReactants, matchCache, graftCache);
+  run_Reactants(*rxn, firstReactants,
+                {.matchCache = &matchCache, .graftCache = &graftCache});
   // One acid graft + one amine graft.
   CHECK(graftCache.size() == 2);
 
   MOL_SPTR_VECT secondReactants = {acidB, amine};
-  run_Reactants(*rxn, secondReactants, matchCache, graftCache);
+  run_Reactants(*rxn, secondReactants,
+                {.matchCache = &matchCache, .graftCache = &graftCache});
   // acidB is a different reagent pointer => new graft; the amine graft is
   // reused via pointer identity, so only one entry is added.
   CHECK(graftCache.size() == 3);
@@ -590,7 +594,8 @@ TEST_CASE("graft cache empty side chain",
   const auto uncached = rxn->runReactants(reactants);
   ReactantMatchCache matchCache;
   ReactionRunnerUtils::ReactantGraftCache graftCache;
-  const auto cached = run_Reactants(*rxn, reactants, matchCache, graftCache);
+  const auto cached = run_Reactants(
+      *rxn, reactants, {.matchCache = &matchCache, .graftCache = &graftCache});
 
   CHECK(!cached.empty());
   CHECK(collectCanonicalIsomericSmiles(cached) ==
@@ -615,13 +620,17 @@ TEST_CASE("graft cache honors dedupeSymmetricMatches",
   REQUIRE(reactants[1]);
 
   ReactantMatchCache matchOnlyCache;
-  const auto matchOnly =
-      run_Reactants(*rxn, reactants, matchOnlyCache, /*dedupe=*/true);
+  const auto matchOnly = run_Reactants(
+      *rxn, reactants,
+      {.matchCache = &matchOnlyCache, .dedupeSymmetricMatches = true});
 
   ReactantMatchCache matchCache;
   ReactionRunnerUtils::ReactantGraftCache graftCache;
-  const auto withGraft = run_Reactants(*rxn, reactants, matchCache, graftCache,
-                                       /*dedupe=*/true);
+  const auto withGraft =
+      run_Reactants(*rxn, reactants,
+                    {.matchCache = &matchCache,
+                     .graftCache = &graftCache,
+                     .dedupeSymmetricMatches = true});
 
   // deduplication collapses the two symmetric nitrogens to a single product
   CHECK(matchOnly.size() == 1);
@@ -651,7 +660,8 @@ TEST_CASE("graft cache preserves conformers",
   const auto uncached = rxn->runReactants(reactants);
   ReactantMatchCache matchCache;
   ReactionRunnerUtils::ReactantGraftCache graftCache;
-  const auto cached = run_Reactants(*rxn, reactants, matchCache, graftCache);
+  const auto cached = run_Reactants(
+      *rxn, reactants, {.matchCache = &matchCache, .graftCache = &graftCache});
 
   REQUIRE(cached.size() == 1);
   REQUIRE(cached[0].size() == 1);
@@ -799,7 +809,7 @@ TEST_CASE("reactant match cache", "[Reaction][enumerate][cache]") {
     rxn->initReactantMatchers();
     auto uncached = run_Reactants(*rxn, reactants);
     ReactantMatchCache cache;
-    auto cached = run_Reactants(*rxn, reactants, cache);
+    auto cached = run_Reactants(*rxn, reactants, {.matchCache = &cache});
 
     CHECK(collectCanonicalSmiles(uncached) == collectCanonicalSmiles(cached));
     CHECK(cache.size() == 2);
@@ -825,13 +835,12 @@ TEST_CASE("reactant match cache", "[Reaction][enumerate][cache]") {
     MOL_SPTR_VECT reactants = {fixedReactant, variableReactants.front()};
     for (const auto &reactant1 : variableReactants) {
       reactants[1] = reactant1;
-      auto products = run_Reactants(*rxn, reactants, cache);
+      auto products = run_Reactants(*rxn, reactants, {.matchCache = &cache});
       REQUIRE(!products.empty());
       REQUIRE(!products[0].empty());
     }
 
-    const auto fixedKey =
-      std::make_tuple(0u, fixedReactant.get(), 1000u, false);
+    const auto fixedKey = std::make_tuple(0u, fixedReactant, 1000u, false);
     CHECK(cache.find(fixedKey) != cache.end());
     CHECK(cache.size() == 4);
   }
@@ -897,28 +906,32 @@ TEST_CASE("run_Reactants symmetric dedup", "[reaction][dedupe]") {
   SECTION("dedupe drops duplicate symmetric products") {
     auto noDedup = run_Reactants(*rxn, reactants);
     ReactantMatchCache cache;
-    auto deduped = run_Reactants(*rxn, reactants, cache, true);
+    auto deduped = run_Reactants(
+        *rxn, reactants, {.matchCache = &cache, .dedupeSymmetricMatches = true});
 
     REQUIRE(noDedup.size() > deduped.size());
 
     // the cached dedupe=false path must be count-equivalent to the uncached run
     ReactantMatchCache noDedupCache;
-    auto noDedupCached = run_Reactants(*rxn, reactants, noDedupCache, false);
+    auto noDedupCached =
+        run_Reactants(*rxn, reactants, {.matchCache = &noDedupCache});
     CHECK(noDedupCached.size() == noDedup.size());
   }
 
   SECTION("dedupe preserves unique product set") {
     auto noDedup = run_Reactants(*rxn, reactants);
     ReactantMatchCache cache;
-    auto deduped = run_Reactants(*rxn, reactants, cache, true);
+    auto deduped = run_Reactants(
+        *rxn, reactants, {.matchCache = &cache, .dedupeSymmetricMatches = true});
 
     CHECK(collectCanonicalSmiles(noDedup) == collectCanonicalSmiles(deduped));
   }
 
   SECTION("dedupe cache key separates modes") {
     ReactantMatchCache cache;
-    auto noDedup = run_Reactants(*rxn, reactants, cache, false);
-    auto deduped = run_Reactants(*rxn, reactants, cache, true);
+    auto noDedup = run_Reactants(*rxn, reactants, {.matchCache = &cache});
+    auto deduped = run_Reactants(
+        *rxn, reactants, {.matchCache = &cache, .dedupeSymmetricMatches = true});
 
     REQUIRE(noDedup.size() > deduped.size());
 

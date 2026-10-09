@@ -65,7 +65,8 @@ std::size_t run_cached(const ChemicalReaction &rxn,
     for (const auto &acid : acids) {
       for (const auto &amine : amines) {
         MOL_SPTR_VECT reactants{acid, amine};
-        total_products += run_Reactants(rxn, reactants, cache).size();
+        total_products +=
+            run_Reactants(rxn, reactants, {.matchCache = &cache}).size();
       }
     }
   }
@@ -107,7 +108,8 @@ TEST_CASE("reaction enumeration matching", "[reaction][enumerate]") {
       for (const auto &acid : acids) {
         for (const auto &amine : amines) {
           MOL_SPTR_VECT reactants{acid, amine};
-          total_products += run_Reactants(*rxn, reactants, cache).size();
+          total_products +=
+              run_Reactants(*rxn, reactants, {.matchCache = &cache}).size();
         }
       }
     }
@@ -148,7 +150,8 @@ TEST_CASE("reaction enumeration matching (recursive SMARTS)",
     for (const auto &amine : amines) {
       MOL_SPTR_VECT reactants{itc, amine};
       uncached_total += run_Reactants(*rxn, reactants).size();
-      cached_total += run_Reactants(*rxn, reactants, checkCache).size();
+      cached_total +=
+          run_Reactants(*rxn, reactants, {.matchCache = &checkCache}).size();
     }
   }
   CHECK(cached_total == uncached_total);
@@ -170,7 +173,8 @@ TEST_CASE("reaction enumeration matching (recursive SMARTS)",
     for (const auto &itc : isothiocyanates) {
       for (const auto &amine : amines) {
         MOL_SPTR_VECT reactants{itc, amine};
-        total_products += run_Reactants(*rxn, reactants, cache).size();
+        total_products +=
+            run_Reactants(*rxn, reactants, {.matchCache = &cache}).size();
       }
     }
     return total_products;
@@ -202,8 +206,10 @@ TEST_CASE("reaction enumeration matching (symmetric dedup)",
         for (const auto &diamine : diamines) {
           for (const auto &acid : acids) {
             MOL_SPTR_VECT reactants{diamine, acid};
-            const auto products = run_Reactants(*rxn, reactants, cache,
-                                                dedupeSymmetricMatches);
+            const auto products = run_Reactants(
+                *rxn, reactants,
+                {.matchCache = &cache,
+                 .dedupeSymmetricMatches = dedupeSymmetricMatches});
             for (const auto &product_set : products) {
               for (const auto &product : product_set) {
                 product_smiles.insert(MolToSmiles(*product));
@@ -222,8 +228,12 @@ TEST_CASE("reaction enumeration matching (symmetric dedup)",
   for (const auto &diamine : diamines) {
     for (const auto &acid : acids) {
       MOL_SPTR_VECT reactants{diamine, acid};
-      dedupOff_total += run_Reactants(*rxn, reactants, checkCache, false).size();
-      dedupOn_total += run_Reactants(*rxn, reactants, checkCache, true).size();
+      dedupOff_total +=
+          run_Reactants(*rxn, reactants, {.matchCache = &checkCache}).size();
+      dedupOn_total += run_Reactants(*rxn, reactants,
+                                     {.matchCache = &checkCache,
+                                      .dedupeSymmetricMatches = true})
+                           .size();
     }
   }
   CHECK(dedupOn_total < dedupOff_total);
@@ -236,7 +246,8 @@ TEST_CASE("reaction enumeration matching (symmetric dedup)",
     for (const auto &diamine : diamines) {
       for (const auto &acid : acids) {
         MOL_SPTR_VECT reactants{diamine, acid};
-        total_products += run_Reactants(*rxn, reactants, cache, false).size();
+        total_products +=
+            run_Reactants(*rxn, reactants, {.matchCache = &cache}).size();
       }
     }
     return total_products;
@@ -248,7 +259,10 @@ TEST_CASE("reaction enumeration matching (symmetric dedup)",
     for (const auto &diamine : diamines) {
       for (const auto &acid : acids) {
         MOL_SPTR_VECT reactants{diamine, acid};
-        total_products += run_Reactants(*rxn, reactants, cache, true).size();
+        total_products += run_Reactants(*rxn, reactants,
+                                        {.matchCache = &cache,
+                                         .dedupeSymmetricMatches = true})
+                              .size();
       }
     }
     return total_products;
@@ -315,7 +329,9 @@ TEST_CASE("reaction enumeration assembly graft cache",
         MOL_SPTR_VECT reactants{acid, amine};
         const auto products =
             useGraftCache
-                ? run_Reactants(*rxn, reactants, matchCache, graftCache)
+                ? run_Reactants(
+                      *rxn, reactants,
+                      {.matchCache = &matchCache, .graftCache = &graftCache})
                 : run_Reactants(*rxn, reactants);
         product_set_count += products.size();
         for (const auto &product_set : products) {
@@ -353,7 +369,10 @@ TEST_CASE("reaction enumeration assembly graft cache",
       for (const auto &amine : amines) {
         MOL_SPTR_VECT reactants{acid, amine};
         benchmark_total_products +=
-            run_Reactants(*rxn, reactants, matchCache, graftCache).size();
+            run_Reactants(
+                *rxn, reactants,
+                {.matchCache = &matchCache, .graftCache = &graftCache})
+                .size();
       }
     }
     return benchmark_total_products;
@@ -404,9 +423,14 @@ TEST_CASE("reaction enumeration three-component symmetric monomers",
       case Mode::Plain:
         return run_Reactants(*rxn, reactants);
       case Mode::DedupMatch:
-        return run_Reactants(*rxn, reactants, matchCache, true);
+        return run_Reactants(
+            *rxn, reactants,
+            {.matchCache = &matchCache, .dedupeSymmetricMatches = true});
       case Mode::DedupGraft:
-        return run_Reactants(*rxn, reactants, matchCache, graftCache, true);
+        return run_Reactants(*rxn, reactants,
+                             {.matchCache = &matchCache,
+                              .graftCache = &graftCache,
+                              .dedupeSymmetricMatches = true});
     }
     return std::vector<MOL_SPTR_VECT>{};
   };

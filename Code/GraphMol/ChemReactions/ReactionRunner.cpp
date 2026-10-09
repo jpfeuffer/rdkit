@@ -253,10 +253,9 @@ bool getReactantMatches(const MOL_SPTR_VECT &reactants,
        iter != rxn.endReactantTemplates(); ++iter, i++) {
     if (matchSingleReactant == MatchAll || matchSingleReactant == i) {
       const auto cacheKey =
-          std::make_tuple(i, reactants[i].get(), maxMatches,
-                          dedupeSymmetricMatches);
+          std::make_tuple(i, reactants[i], maxMatches, dedupeSymmetricMatches);
       VectMatchVectType matches;
-      if (cache) {
+      if (cache != nullptr) {
         auto cacheIt = cache->find(cacheKey);
         if (cacheIt != cache->end()) {
           matches = cacheIt->second;
@@ -1848,14 +1847,13 @@ generateOneProductSet(const ChemicalReaction &rxn,
     unsigned int reactantId = 0;
     for (auto iter = rxn.beginReactantTemplates();
          iter != rxn.endReactantTemplates(); ++iter, reactantId++) {
-      if (graftCache) {
+      if (graftCache != nullptr) {
         // reuse (or populate) the graft this reagent/match contributes to this
-        // product template, keyed by reagent pointer identity + match index.
+        // product template, keyed by reagent identity + match index.
         // dedupeSymmetricMatches and doConfs are part of the key because they
         // determine, respectively, which match list the index refers to and
         // whether the graft carries conformer coordinates.
-        auto key = std::make_tuple(prodId, reactantId,
-                                   reactants.at(reactantId).get(),
+        auto key = std::make_tuple(prodId, reactantId, reactants.at(reactantId),
                                    (*matchIdxs)[reactantId],
                                    dedupeSymmetricMatches, doConfs);
         auto cacheIt = graftCache->find(key);
@@ -2018,20 +2016,10 @@ std::vector<MOL_SPTR_VECT> run_Reactants(const ChemicalReaction &rxn,
 
 std::vector<MOL_SPTR_VECT> run_Reactants(const ChemicalReaction &rxn,
                                          const MOL_SPTR_VECT &reactants,
-                                         ReactantMatchCache &cache,
-                                         bool dedupeSymmetricMatches,
-                                         unsigned int maxProducts) {
-  return run_ReactantsImpl(rxn, reactants, maxProducts, dedupeSymmetricMatches,
-                           &cache, nullptr);
-}
-
-std::vector<MOL_SPTR_VECT> run_Reactants(
-    const ChemicalReaction &rxn, const MOL_SPTR_VECT &reactants,
-    ReactantMatchCache &matchCache,
-    ReactionRunnerUtils::ReactantGraftCache &graftCache,
-    bool dedupeSymmetricMatches, unsigned int maxProducts) {
-  return run_ReactantsImpl(rxn, reactants, maxProducts, dedupeSymmetricMatches,
-                           &matchCache, &graftCache);
+                                         const RunReactantsParams &params) {
+  return run_ReactantsImpl(rxn, reactants, params.maxProducts,
+                           params.dedupeSymmetricMatches, params.matchCache,
+                           params.graftCache);
 }
 
 namespace {

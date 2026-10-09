@@ -47,15 +47,64 @@ namespace RDKit {
 using VectMatchVectType = std::vector<MatchVectType>;
 //! Caches reactant-template substructure matches across run_Reactants() calls.
 /*!
-  Keyed on (reactant template index, reagent pointer identity, effective
-  maxMatches, dedupeSymmetricMatches). The ROMol objects whose raw pointers
-  are used as keys must outlive this cache and must not be structurally
-  modified between calls, otherwise stale match data may be returned.
-  Not thread-safe.
+  Keyed on (reactant template index, reagent, effective maxMatches,
+  dedupeSymmetricMatches). Reagents are compared by pointer identity; the cache
+  holds a reference to each reagent so it stays alive as long as the cache
+  does. Reagents must not be structurally modified while cached, otherwise
+  stale match data may be returned. Not thread-safe.
 */
 using ReactantMatchCache =
-    std::map<std::tuple<unsigned int, const ROMol *, unsigned int, bool>,
+    std::map<std::tuple<unsigned int, ROMOL_SPTR, unsigned int, bool>,
              VectMatchVectType>;
+
+namespace ReactionRunnerUtils {
+struct ReactantGraft {
+  RWMOL_SPTR iso;
+  unsigned int templateAtomCount;
+  unsigned int templateBondCount;
+  std::vector<unsigned int> anchorAtomIdxs;
+  std::vector<unsigned int> anchorBondIdxs;
+};
+
+//! Caches reusable reactant grafts across product-assembly calls.
+/*!
+  Keyed on (product template index, reactant template index, reagent, match
+  index within that reactant's match list, dedupeSymmetricMatches flag, doConfs
+  flag). A graft captures the atoms/bonds a reagent contributes to a product
+  and can be replayed onto any number of products. The two trailing flags are
+  part of the key because the match list a match index refers to depends on
+  dedupeSymmetricMatches, and whether a graft carries conformer coordinates
+  depends on doConfs. Reagents are compared by pointer identity and kept alive
+  by the cache; they must not be structurally modified while cached, otherwise
+  stale graft data may be replayed. Not thread-safe.
+*/
+using ReactantGraftCache =
+    std::map<std::tuple<unsigned int, unsigned int, ROMOL_SPTR, unsigned int,
+                        bool, bool>,
+             ReactantGraft>;
+}  // namespace ReactionRunnerUtils
+
+//! Optional caches and switches for run_Reactants()
+/*!
+  \param matchCache: if non-null, reactant-template matches are looked up in
+                     (and stored to) this cache.
+  \param graftCache: if non-null, the atoms and bonds each reagent contributes
+                     to a product are extracted once and replayed. Output is
+                     identical to the uncached path.
+  \param dedupeSymmetricMatches: collapse matches that land on
+                     symmetry-equivalent reagent atoms (fewer duplicate
+                     products for symmetric reagents).
+  \param maxProducts: if non zero, the maximum number of products to generate
+                     before stopping.
+
+  Caches must not be shared between different reactions.
+*/
+struct RDKIT_CHEMREACTIONS_EXPORT RunReactantsParams {
+  ReactantMatchCache *matchCache = nullptr;
+  ReactionRunnerUtils::ReactantGraftCache *graftCache = nullptr;
+  bool dedupeSymmetricMatches = false;
+  unsigned int maxProducts = 1000;
+};
 
 //! Runs the reaction on a set of reactants
 /*!
@@ -78,17 +127,14 @@ RDKIT_CHEMREACTIONS_EXPORT std::vector<MOL_SPTR_VECT> run_Reactants(
     const ChemicalReaction &rxn, const MOL_SPTR_VECT &reactants,
     unsigned int maxProducts = 1000);
 
-//! Runs a reaction on a set of reactants using a reactant match cache
+//! Runs a reaction on a set of reactants, optionally using caches
 /*!
-  This overload reuses previously computed reactant-template matches for
-  repeated reagent/template combinations. The cache key is the reactant
-  template index, the reagent pointer identity, the effective
-  maxMatches/maxProducts value, and whether symmetry deduplication is on.
+  Same as run_Reactants(rxn, reactants, maxProducts), with the caching and
+  deduplication behavior controlled by \c params (see RunReactantsParams).
 */
 RDKIT_CHEMREACTIONS_EXPORT std::vector<MOL_SPTR_VECT> run_Reactants(
     const ChemicalReaction &rxn, const MOL_SPTR_VECT &reactants,
-    ReactantMatchCache &cache, bool dedupeSymmetricMatches = false,
-    unsigned int maxProducts = 1000);
+    const RunReactantsParams &params);
 
 //! Runs a single reactant against a single reactant template
 /*!
@@ -133,33 +179,6 @@ RDKIT_CHEMREACTIONS_EXPORT ROMol *reduceProductToSideChains(
     const ROMOL_SPTR &product, bool addDummyAtoms = true);
 
 namespace ReactionRunnerUtils {
-struct ReactantGraft {
-  RWMOL_SPTR iso;
-  unsigned int templateAtomCount;
-  unsigned int templateBondCount;
-  std::vector<unsigned int> anchorAtomIdxs;
-  std::vector<unsigned int> anchorBondIdxs;
-};
-
-//! Caches reusable reactant grafts across product-assembly calls.
-/*!
-  Keyed on (product template index, reactant template index, reagent pointer
-  identity, match index within that reactant's match list, dedupeSymmetricMatches
-  flag, doConfs flag). A graft captures the atoms/bonds a reagent contributes to
-  a product and can be replayed onto any number of products. The two trailing
-  flags are part of the key because the match list a match index refers to
-  depends on dedupeSymmetricMatches, and whether a graft carries conformer
-  coordinates depends on doConfs; including them keeps a single cache correct
-  even when reused across calls with differing settings. The ROMol objects whose
-  raw pointers are used as keys must outlive this cache and must not be
-  structurally modified between calls, otherwise stale graft data may be
-  replayed. Not thread-safe.
-*/
-using ReactantGraftCache = std::map<
-    std::tuple<unsigned int, unsigned int, const ROMol *, unsigned int, bool,
-               bool>,
-    ReactantGraft>;
-
 RDKIT_CHEMREACTIONS_EXPORT VectMatchVectType getReactantMatchesToTemplate(
   const ROMol &reactant, const ROMol &templ, unsigned int maxMatches,
   const SubstructMatchParameters &ssparams);
@@ -195,23 +214,6 @@ RDKIT_CHEMREACTIONS_EXPORT void applyReactantGraft(RWMOL_SPTR product,
                            Conformer *productConf,
                            const ReactantGraft &graft);
 }  // namespace ReactionRunnerUtils
-
-//! Runs a reaction reusing both reactant matches and reactant grafts
-/*!
-  In addition to the reactant-match cache, this overload caches the per-reagent
-  "graft" (the atoms and bonds a reagent contributes to each product) keyed by
-  (product template index, reactant template index, reagent pointer identity,
-  match index) and replays it across Cartesian-product combinations rather than
-  re-deriving it for every combination. Output is identical to the uncached
-  path, including stereochemistry, conformers and query atoms. Both caches must
-  outlive the call and the reagents must not be structurally modified between
-  calls. Not thread-safe.
-*/
-RDKIT_CHEMREACTIONS_EXPORT std::vector<MOL_SPTR_VECT> run_Reactants(
-    const ChemicalReaction &rxn, const MOL_SPTR_VECT &reactants,
-    ReactantMatchCache &matchCache,
-    ReactionRunnerUtils::ReactantGraftCache &graftCache,
-    bool dedupeSymmetricMatches = false, unsigned int maxProducts = 1000);
 
 }  // namespace RDKit
 
