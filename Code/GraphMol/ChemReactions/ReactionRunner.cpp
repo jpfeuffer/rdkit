@@ -198,19 +198,42 @@ VectMatchVectType getReactantMatchesToTemplate(
   return res;
 }
 
+namespace {
+// Equal for two matches only if an automorphism of the reactant (including
+// stereo) maps one match onto the other, position by position.
+std::string labelledMatchSmiles(const ROMol &reactant,
+                                const MatchVectType &match,
+                                int mapNumOffset) {
+  RWMol labelled(reactant);
+  for (const auto &[queryIdx, molIdx] : match) {
+    labelled.getAtomWithIdx(molIdx)->setAtomMapNum(mapNumOffset + queryIdx +
+                                                   1);
+  }
+  labelled.updatePropertyCache(false);
+  return MolToSmiles(labelled);
+}
+}  // namespace
+
 VectMatchVectType dedupeMatchesBySymmetry(const ROMol &reactant,
                                           const VectMatchVectType &matches) {
   if (matches.size() < 2) {
     return matches;
   }
 
-  // Matches with the same rank tuple land on symmetry-equivalent reagent
-  // atoms, so they would generate identical products. Keep the first one.
+  // Equal symmetry ranks for every matched atom are necessary but not
+  // sufficient for two matches to give the same product (e.g. ortho vs para
+  // pairs in benzene), so rank collisions are confirmed with an exact check.
   std::vector<unsigned int> ranks;
   Canon::rankMolAtoms(reactant, ranks, false);
 
-  std::set<std::vector<unsigned int>> seenKeys;
+  int mapNumOffset = 0;
+  for (const auto atom : reactant.atoms()) {
+    mapNumOffset = std::max(mapNumOffset, atom->getAtomMapNum());
+  }
+
+  std::map<std::vector<unsigned int>, std::vector<size_t>> keptByRankKey;
   VectMatchVectType res;
+  std::vector<std::string> keptSmiles;  // computed lazily, parallel to res
   res.reserve(matches.size());
 
   for (const auto &match : matches) {
@@ -226,9 +249,28 @@ VectMatchVectType dedupeMatchesBySymmetry(const ROMol &reactant,
       key.push_back(ranks[pair.second]);
     }
 
-    if (seenKeys.insert(std::move(key)).second) {
-      res.push_back(match);
+    auto &kept = keptByRankKey[key];
+    std::string smiles;
+    if (!kept.empty()) {
+      smiles = labelledMatchSmiles(reactant, match, mapNumOffset);
+      bool duplicate = false;
+      for (const auto keptIdx : kept) {
+        if (keptSmiles[keptIdx].empty()) {
+          keptSmiles[keptIdx] =
+              labelledMatchSmiles(reactant, res[keptIdx], mapNumOffset);
+        }
+        if (keptSmiles[keptIdx] == smiles) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (duplicate) {
+        continue;
+      }
     }
+    kept.push_back(res.size());
+    res.push_back(match);
+    keptSmiles.push_back(std::move(smiles));
   }
 
   return res;

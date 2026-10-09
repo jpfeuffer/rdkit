@@ -951,6 +951,49 @@ TEST_CASE("run_Reactants symmetric dedup", "[reaction][dedupe]") {
   }
 }
 
+TEST_CASE("symmetric dedup keeps matches not related by one symmetry",
+          "[reaction][dedupe]") {
+  struct DedupeCase {
+    const char *smarts;
+    const char *reagent;
+    size_t expectedUnique;
+  };
+  const std::vector<DedupeCase> cases = {
+      // every matched atom is symmetry-equivalent, but o/m/p pairs are not
+      {"([cH:1].[cH:2])>>([c:1]F.[c:2]Cl)", "c1ccccc1", 3},
+      // connected template: prismane triangle edges vs. rung edges
+      {"[CH1:1][CH1:2]>>[C:1](F)[C:2]Cl", "C12C3C1C1C2C31", 2},
+      {"([CH3:1].[CH3:2])>>([C:1]F.[C:2]Cl)", "Cc1cc(C)c(C)cc1C", 3},
+      // enantiotopic amines of a meso diamine give enantiomers
+      {"[NH2:1]>>[N:1]C(=O)C", "N[C@@H]1CCCC[C@@H]1N", 2},
+      // these do collapse; the trans diamine is C2-symmetric
+      {"[NH2:1]>>[N:1]C(=O)C", "N[C@@H]1CCCC[C@H]1N", 1},
+      {"[NH2:1]>>[N:1]C", "NCCN", 1},
+      {"[cH:1]>>[c:1]F", "c1ccccc1", 1},
+  };
+  for (const auto &testCase : cases) {
+    INFO(testCase.smarts << " " << testCase.reagent);
+    std::unique_ptr<ChemicalReaction> rxn(
+        RxnSmartsToChemicalReaction(testCase.smarts));
+    REQUIRE(rxn);
+    rxn->initReactantMatchers();
+    MOL_SPTR_VECT reactants = {ROMOL_SPTR(SmilesToMol(testCase.reagent))};
+    REQUIRE(reactants[0]);
+
+    const auto plain = run_Reactants(*rxn, reactants);
+    ReactantMatchCache cache;
+    const auto deduped = run_Reactants(
+        *rxn, reactants, {.matchCache = &cache, .dedupeSymmetricMatches = true});
+
+    CHECK(collectCanonicalIsomericSmiles(plain).size() ==
+          testCase.expectedUnique);
+    CHECK(collectCanonicalIsomericSmiles(deduped) ==
+          collectCanonicalIsomericSmiles(plain));
+    // one kept match per distinct product
+    CHECK(deduped.size() == testCase.expectedUnique);
+  }
+}
+
 TEST_CASE("negative charge queries. Part of testing changes for github #2604",
           "[Reaction]") {
   SECTION("no redundancy") {
