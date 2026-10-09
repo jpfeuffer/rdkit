@@ -36,6 +36,7 @@
 #include <GraphMol/RDKitBase.h>
 #include <GraphMol/RDKitQueries.h>
 #include <GraphMol/SmilesParse/SmilesParse.h>
+#include <GraphMol/SmilesParse/SmilesWrite.h>
 #include <GraphMol/FileParsers/MolSupplier.h>
 
 #include <algorithm>
@@ -607,6 +608,143 @@ void testGraftCacheNotSerialized() {
 void testGraftCacheNotSerialized() {}
 #endif
 
+// Sanitized CXSMILES, optionally prefixed by the raw (unsanitized) stereo state.
+std::string stereoSignature(const MOL_SPTR_VECT &productSet, bool includeRaw) {
+  std::string res;
+  for (const auto &product : productSet) {
+    for (const auto bond : product->bonds()) {
+      TEST_ASSERT(!bond->hasProp("_UnknownStereoRxnBond"));
+    }
+    if (includeRaw) {
+      for (const auto atom : product->atoms()) {
+        res += std::to_string(atom->getChiralTag());
+      }
+      res += "|";
+      for (const auto bond : product->bonds()) {
+        res += std::to_string(bond->getStereo());
+        for (auto idx : bond->getStereoAtoms()) {
+          res += "," + std::to_string(idx);
+        }
+        res += ";";
+      }
+      res += "|";
+    }
+    RWMol sanitized(*product);
+    MolOps::sanitizeMol(sanitized);
+    res += MolToCXSmiles(sanitized, SmilesWriteParams(),
+                         SmilesWrite::CXSmilesFields::CX_ENHANCEDSTEREO) +
+           " ";
+  }
+  return res;
+}
+
+std::vector<std::string> collectStereoSequence(
+    const ChemicalReaction &rxn, const EnumerationTypes::BBS &bbs,
+    ReactantCacheMode cacheMode, bool dedupe) {
+  EnumerationParams params;
+  params.cacheMode = cacheMode;
+  params.dedupeSymmetricMatches = dedupe;
+  EnumerateLibrary en(rxn, bbs, params);
+  std::vector<std::string> res;
+  while (en) {
+    for (const auto &productSet : en.next()) {
+      // symmetric matches dropped by dedupe differ only in atom order
+      res.push_back(stereoSignature(productSet, !dedupe));
+    }
+  }
+  return res;
+}
+
+void testCacheModesPreserveStereo() {
+  BOOST_LOG(rdInfoLog) << "Testing stereo is identical across cache modes"
+                       << std::endl;
+  struct StereoCase {
+    std::string smarts;
+    std::vector<std::vector<std::string>> reagents;
+  };
+  const std::vector<StereoCase> cases = {
+      // chiral reactant template: the prefilter must drop the same reagents
+      {"[C@H:1]([C:2])([C:3])Br.[NH2:4][c:5]>>[C@@H:1]([C:2])([C:3])[N:4][c:5]",
+       {{"C[C@H](Br)CC", "C[C@@H](Br)CC", "CC(Br)CC", "Br[C@@H]1CC[C@H](C)CC1"},
+        {"Nc1ccccc1", "Nc1ccc([C@@H](C)O)cc1"}}},
+      // stereo inside a recursive query
+      {"[NH2;$(N[C@H](C)c):1].[C:5](=O)[OH]>>[C:5](=O)[N:1]",
+       {{"N[C@@H](C)c1ccccc1", "N[C@H](C)c1ccccc1", "NC(C)c1ccccc1", "NCC"},
+        {"OC(=O)C", "OC(=O)[C@@H](C)F"}}},
+      // E double bond formed between two reactants, set by the template
+      {"[CH1:1](=O)[#6:3].[CH2:2]([#6:4])Br>>[#6:3]/[CH1:1]=[CH1:2]/[#6:4]",
+       {{"O=Cc1ccccc1", "O=CC[C@H](C)O", "O=C/C=C/C"},
+        {"BrCc1ccccc1", "BrCC(=O)OC", "BrC[C@@H](C)F"}}},
+      // double bond formed between two reactants, stereo left unspecified
+      {"[CH1:1](=O)[#6:3].[CH2:2]([#6:4])Br>>[#6:3][CH1:1]=[CH1:2][#6:4]",
+       {{"O=Cc1ccccc1", "O=CC[C@H](C)O"}, {"BrCc1ccccc1", "BrC[C@@H](C)F"}}},
+      // template double bond without directions in the first / second reactant
+      {"[C:6][C:1]=[C:2][C:3](=O)[OH].[NH2:4][#6:5]>>[C:6][C:1]=[C:2][C:3](=O)"
+       "[N:4][#6:5]",
+       {{"C/C=C/C(=O)O", "C/C=C\\C(=O)O", "CC=CC(=O)O"},
+        {"N[C@@H](C)c1ccccc1", "NC/C=C/C"}}},
+      {"[NH2:4][#6:5].[C:6][C:1]=[C:2][C:3](=O)[OH]>>[C:6][C:1]=[C:2][C:3](=O)"
+       "[N:4][#6:5]",
+       {{"N[C@@H](C)c1ccccc1", "NC/C=C/C"},
+        {"C/C=C/C(=O)O", "C/C=C\\C(=O)O", "CC=CC(=O)O"}}},
+      // three components, E/Z template on the middle one
+      {"[NH2:4][#6:5].[C:6]/[C:1]=[C:2]/[C:3](=O)[OH].[OH:7][c:8]>>[C:6]/[C:1]="
+       "[C:2]/[C:3](=O)[N:4][#6:5].[O:7][c:8]",
+       {{"N[C@@H](C)c1ccccc1", "NC/C=C/C"},
+        {"C/C=C/C(=O)O", "C/C=C\\C(=O)O", "CC=CC(=O)O"},
+        {"Oc1ccccc1"}}},
+      // chiral template on meso and C2-symmetric diamines (dedupe)
+      {"[NH2:1][C@H:2]([CH3:3])[C:4].[C:5](=O)[OH]>>[C:5](=O)[N:1][C@H:2]"
+       "([CH3:3])[C:4]",
+       {{"N[C@@H](C)C[C@H](C)N", "N[C@@H](C)C[C@@H](C)N", "NC(C)CC(C)N",
+         "N[C@H](C)CC"},
+        {"OC(=O)C", "OC(=O)[C@@H](C)F"}}},
+      // enhanced stereo in the building blocks
+      {"[C:1](=[O:2])[OH].[N;!H0;!$(N-C=O):3]>>[C:1](=[O:2])[N:3]",
+       {{"OC(=O)[C@@H](C)Cl |o1:3|", "OC(=O)[C@@H](C)C[C@H](C)F |&1:3,6|"},
+        {"N[C@@H](C)c1ccccc1 |o1:1|", "N[C@H](C)C[C@@H](C)O |o1:1,&2:4|"}}},
+  };
+
+  for (const auto &testCase : cases) {
+    std::unique_ptr<ChemicalReaction> rxn(
+        RxnSmartsToChemicalReaction(testCase.smarts));
+    TEST_ASSERT(rxn);
+    rxn->initReactantMatchers();
+    EnumerationTypes::BBS bbs(testCase.reagents.size());
+    for (size_t i = 0; i < testCase.reagents.size(); ++i) {
+      for (const auto &smi : testCase.reagents[i]) {
+        SmilesParserParams ps;
+        ps.allowCXSMILES = true;
+        bbs[i].push_back(ROMOL_SPTR(SmilesToMol(smi, ps)));
+        TEST_ASSERT(bbs[i].back());
+      }
+    }
+
+    const auto baseline =
+        collectStereoSequence(*rxn, bbs, ReactantCacheMode::None, false);
+    TEST_ASSERT(!baseline.empty());
+    TEST_ASSERT(collectStereoSequence(*rxn, bbs, ReactantCacheMode::MatchOnly,
+                                      false) == baseline);
+    TEST_ASSERT(collectStereoSequence(*rxn, bbs, ReactantCacheMode::Full,
+                                      false) == baseline);
+
+    std::set<std::string> baselineSet;
+    {
+      EnumerateLibrary en(*rxn, bbs);
+      while (en) {
+        for (const auto &productSet : en.next()) {
+          baselineSet.insert(stereoSignature(productSet, false));
+        }
+      }
+    }
+    TEST_ASSERT(collectUniqueSmiles(collectStereoSequence(
+                    *rxn, bbs, ReactantCacheMode::MatchOnly, true)) ==
+                baselineSet);
+    TEST_ASSERT(collectUniqueSmiles(collectStereoSequence(
+                    *rxn, bbs, ReactantCacheMode::Full, true)) == baselineSet);
+  }
+}
+
 void testEnumerations() {
   EnumerationTypes::BBS bbs;
   bbs.resize(2);
@@ -840,6 +978,7 @@ int main() {
   testGraftCacheReuseAcrossReset();
   testGraftCachePreservedOnCopy();
   testGraftCacheNotSerialized();
+  testCacheModesPreserveStereo();
   testSamplers();
   testEvenSamplers();
   testEnumerations();

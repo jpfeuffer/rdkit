@@ -37,7 +37,9 @@
 #include "EvenSamplePairs.h"
 #include "../ReactionPickler.h"
 #include <GraphMol/MolPickler.h>
+#include <GraphMol/QueryOps.h>
 #include <GraphMol/SmilesParse/SmilesWrite.h>
+#include <GraphMol/Substruct/SubstructMatch.h>
 
 #include <RDGeneral/BoostStartInclude.h>
 #include <boost/multiprecision/cpp_int.hpp>
@@ -119,6 +121,148 @@ bool hasProtectedAtoms(const ROMol &mol) {
   }
   return false;
 }
+
+bool hasChiralLabel(const Atom *atom) {
+  return atom->getChiralTag() == Atom::CHI_TETRAHEDRAL_CW ||
+         atom->getChiralTag() == Atom::CHI_TETRAHEDRAL_CCW;
+}
+
+bool hasStereoBond(const Bond *bond) {
+  return bond->getBondType() == Bond::DOUBLE &&
+         bond->getStereo() > Bond::STEREOANY;
+}
+
+bool hasTopLevelStereo(const ROMol &query) {
+  for (const auto atom : query.atoms()) {
+    if (hasChiralLabel(atom)) {
+      return true;
+    }
+  }
+  for (const auto bond : query.bonds()) {
+    if (hasStereoBond(bond)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool hasRecursiveStereo(const ROMol &query);
+
+bool queryTreeHasStereo(const QueryAtom::QUERYATOM_QUERY *query) {
+  if (query->getDescription() == "RecursiveStructure") {
+    const auto *subMol =
+        static_cast<const RecursiveStructureQuery *>(query)->getQueryMol();
+    if (subMol && (hasTopLevelStereo(*subMol) || hasRecursiveStereo(*subMol))) {
+      return true;
+    }
+  }
+  for (auto child = query->beginChildren(); child != query->endChildren();
+       ++child) {
+    if (queryTreeHasStereo(child->get())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool hasRecursiveStereo(const ROMol &query) {
+  for (const auto atom : query.atoms()) {
+    if (atom->hasQuery() && queryTreeHasStereo(atom->getQuery())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Apart from useChirality, uniquify and maxMatches, are these the defaults
+// that countMatches() uses? Then turning chirality on can only remove matches.
+bool matchesOtherwiseLikeCountMatches(const SubstructMatchParameters &ps) {
+  const SubstructMatchParameters defaults;
+  return ps.useEnhancedStereo == defaults.useEnhancedStereo &&
+         ps.aromaticMatchesConjugated == defaults.aromaticMatchesConjugated &&
+         ps.useQueryQueryMatches == defaults.useQueryQueryMatches &&
+         ps.useGenericMatchers == defaults.useGenericMatchers &&
+         ps.recursionPossible == defaults.recursionPossible &&
+         ps.maxRecursiveMatches == defaults.maxRecursiveMatches &&
+         ps.specifiedStereoQueryMatchesUnspecified ==
+             defaults.specifiedStereoQueryMatchesUnspecified &&
+         ps.aromaticMatchesSingleOrDouble ==
+             defaults.aromaticMatchesSingleOrDouble &&
+         ps.atomProperties.empty() && ps.bondProperties.empty() &&
+         !ps.extraFinalCheck && !ps.extraAtomCheck && !ps.extraBondCheck;
+}
+
+// How the keep/drop decision of countMatches() (chirality-aware) can be made
+// from the matches found with the reaction's own substructure parameters.
+enum class KeepDecision {
+  AnyMatch,        // chirality cannot change the outcome
+  ChiralRecheck,   // re-check the found matches with chirality
+  CountMatches     // matches not comparable, run countMatches()
+};
+
+KeepDecision getKeepDecision(const ROMol &reactantTemplate,
+                             const SubstructMatchParameters &ps) {
+  if (!matchesOtherwiseLikeCountMatches(ps)) {
+    return KeepDecision::CountMatches;
+  }
+  if (ps.useChirality) {
+    return KeepDecision::AnyMatch;
+  }
+  if (hasRecursiveStereo(reactantTemplate)) {
+    return KeepDecision::CountMatches;
+  }
+  return hasTopLevelStereo(reactantTemplate) ? KeepDecision::ChiralRecheck
+                                             : KeepDecision::AnyMatch;
+}
+
+// Would any of these (non-chiral) matches survive SubstructMatch with
+// useChirality=true? Mirrors its atom/bond label checks and final check.
+bool anyMatchPassesChirality(const ROMol &mol, const ROMol &query,
+                             const VectMatchVectType &matches) {
+  SubstructMatchParameters ps;
+  ps.useChirality = true;
+  ps.uniquify = false;
+  MolMatchFinalCheckFunctor finalCheck(query, mol, ps);
+
+  const auto numQueryAtoms = query.getNumAtoms();
+  std::vector<std::uint32_t> queryIdxs(numQueryAtoms);
+  std::vector<std::uint32_t> molIdxs(numQueryAtoms);
+  std::vector<int> queryToMol(numQueryAtoms, -1);
+  for (const auto &match : matches) {
+    for (size_t i = 0; i < match.size(); ++i) {
+      queryIdxs[i] = match[i].first;
+      molIdxs[i] = match[i].second;
+      queryToMol[match[i].first] = match[i].second;
+    }
+    bool labelsOK = true;
+    for (const auto &[queryIdx, molIdx] : match) {
+      if (hasChiralLabel(query.getAtomWithIdx(queryIdx)) &&
+          !hasChiralLabel(mol.getAtomWithIdx(molIdx))) {
+        labelsOK = false;
+        break;
+      }
+    }
+    for (const auto qBond : query.bonds()) {
+      if (!labelsOK) {
+        break;
+      }
+      if (!hasStereoBond(qBond)) {
+        continue;
+      }
+      const auto mBond =
+          mol.getBondBetweenAtoms(queryToMol[qBond->getBeginAtomIdx()],
+                                  queryToMol[qBond->getEndAtomIdx()]);
+      if (mBond && mBond->getBondType() == Bond::DOUBLE &&
+          mBond->getStereo() <= Bond::STEREOANY) {
+        labelsOK = false;
+      }
+    }
+    if (labelsOK && finalCheck(queryIdxs.data(), molIdxs.data())) {
+      return true;
+    }
+  }
+  return false;
+}
 }  // namespace
 BBS removeNonmatchingReagents(const ChemicalReaction &rxn, BBS bbs,
                               const EnumerationParams &params) {
@@ -141,6 +285,8 @@ BBS removeNonmatchingReagents(const ChemicalReaction &rxn, BBS bbs,
             : rdcast<unsigned int>(params.reagentMaxMatchCount);
 
     ROMOL_SPTR reactantTemplate = rxn.getReactants()[reactant_idx];
+    const auto keepDecision =
+        getKeepDecision(*reactantTemplate, rxn.getSubstructParams());
     for (size_t reagent_idx = 0; reagent_idx < bbs[reactant_idx].size();
          ++reagent_idx) {
       ROMOL_SPTR mol = bbs[reactant_idx][reagent_idx];
@@ -148,22 +294,33 @@ BBS removeNonmatchingReagents(const ChemicalReaction &rxn, BBS bbs,
 
       const bool canPrimeCache =
           cache != nullptr && params.reagentMaxMatchCount == INT_MAX &&
+          keepDecision != KeepDecision::CountMatches &&
           !hasProtectedAtoms(*mol);
       if (canPrimeCache) {
+        constexpr unsigned int maxPrimeMatches = 1000u;
         VectMatchVectType reactantMatches =
             ReactionRunnerUtils::getReactantMatchesToTemplate(
-                *mol.get(), *reactantTemplate.get(), 1000u,
+                *mol.get(), *reactantTemplate.get(), maxPrimeMatches,
                 rxn.getSubstructParams());
-        if (params.dedupeSymmetricMatches) {
-          reactantMatches = ReactionRunnerUtils::dedupeMatchesBySymmetry(
-              *mol.get(), reactantMatches);
+        // keep/drop must agree with countMatches(), which uses chirality
+        bool keep = !reactantMatches.empty();
+        if (keep && keepDecision == KeepDecision::ChiralRecheck) {
+          keep = anyMatchPassesChirality(*mol, *reactantTemplate,
+                                         reactantMatches);
+          if (!keep && reactantMatches.size() >= maxPrimeMatches) {
+            keep = countMatches(*mol.get(), *reactantTemplate.get(), 0) > 0;
+          }
         }
-        const auto cacheKey =
-            std::make_tuple(static_cast<unsigned int>(reactant_idx), mol, 1000u,
-                            params.dedupeSymmetricMatches);
-        matches = reactantMatches.size();
-        if (matches) {
-          cache->emplace(cacheKey, reactantMatches);
+        if (keep) {
+          if (params.dedupeSymmetricMatches) {
+            reactantMatches = ReactionRunnerUtils::dedupeMatchesBySymmetry(
+                *mol.get(), reactantMatches);
+          }
+          matches = reactantMatches.size();
+          const auto cacheKey =
+              std::make_tuple(static_cast<unsigned int>(reactant_idx), mol,
+                              maxPrimeMatches, params.dedupeSymmetricMatches);
+          cache->emplace(cacheKey, std::move(reactantMatches));
         }
       } else {
         matches =

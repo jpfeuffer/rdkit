@@ -750,6 +750,23 @@ void updateStereoBonds(RWMOL_SPTR product, const ROMol &reactant,
     if (pBond->getBondType() != Bond::BondType::DOUBLE) {
       continue;
     } else if (pBond->hasProp(_UnknownStereoRxnBond)) {
+      // TODO: ORDER-DEPENDENT STEREO BUG (kept as-is for backwards
+      // compatibility).
+      // updateStereoBonds() runs once per reactant over *all* product bonds,
+      // so this branch fires during the first reactant's pass for every
+      // flagged template double bond, including bonds whose atoms come from a
+      // later reactant. When that later reactant's pass runs, the flag is gone
+      // and the reactant's E/Z stereo is forwarded below instead of being
+      // reset. Result: "[C:6][C:1]=[C:2][C:3](=O)[OH].[NH2:4][#6:5]>>..."
+      // drops the acid's E/Z, but the same reaction with the reactant
+      // templates swapped keeps it.
+      // The graft cache path (extractReactantGraft() and
+      // finalizeGraftedTemplateBondStereo()) deliberately reproduces this
+      // behavior so cached and uncached enumeration stay identical. If this is
+      // fixed (e.g. only handle the flag for bonds mapped to the current
+      // reactant, or clear it once after all reactants have been added),
+      // remove the reactantId > 0 special case in extractReactantGraft() and
+      // the numReactants check in finalizeGraftedTemplateBondStereo().
       pBond->setStereo(Bond::BondStereo::STEREONONE);
       pBond->clearProp(_UnknownStereoRxnBond);
       continue;
@@ -1480,6 +1497,17 @@ ReactantGraft extractReactantGraft(const ChemicalReaction &rxn,
   graft.templateAtomCount = graft.iso->getNumAtoms();
   graft.templateBondCount = graft.iso->getNumBonds();
 
+  // Mirror the direct path, where reactant 0's updateStereoBonds() pass has
+  // already cleared these flags (see the ORDER-DEPENDENT STEREO BUG TODO).
+  if (reactantId > 0) {
+    for (auto bond : graft.iso->bonds()) {
+      if (bond->hasProp(_UnknownStereoRxnBond)) {
+        bond->setStereo(Bond::BondStereo::STEREONONE);
+        bond->clearProp(_UnknownStereoRxnBond);
+      }
+    }
+  }
+
   Conformer *conf = nullptr;
   if (doConfs) {
     conf = new Conformer(graft.iso->getNumAtoms());
@@ -1634,6 +1662,42 @@ void applyReactantGraft(RWMOL_SPTR product, Conformer *productConf,
 
   copyStereoGroupsFromGraft(*graft.iso, product, isoToProd);
 }
+
+namespace {
+// Template double bonds that no graft owns (e.g. a bond formed between two
+// reactants) are never touched by applyReactantGraft(). Give them the state the
+// direct path's per-reactant updateStereoBonds() passes leave behind.
+void finalizeGraftedTemplateBondStereo(
+    RWMOL_SPTR product, const boost::dynamic_bitset<> &graftedTemplateBonds,
+    unsigned int numReactants) {
+  for (unsigned int bondIdx = 0; bondIdx < graftedTemplateBonds.size();
+       ++bondIdx) {
+    if (graftedTemplateBonds[bondIdx]) {
+      continue;
+    }
+    auto pBond = product->getBondWithIdx(bondIdx);
+    if (pBond->getBondType() != Bond::BondType::DOUBLE) {
+      continue;
+    }
+    if (pBond->hasProp(_UnknownStereoRxnBond)) {
+      pBond->setStereo(Bond::BondStereo::STEREONONE);
+      pBond->clearProp(_UnknownStereoRxnBond);
+      // only later reactant passes look at the bond again (see the
+      // ORDER-DEPENDENT STEREO BUG TODO)
+      if (numReactants < 2) {
+        continue;
+      }
+    }
+    const auto *startDirBond =
+        Chirality::getNeighboringDirectedBond(*product, pBond->getBeginAtom());
+    const auto *endDirBond =
+        Chirality::getNeighboringDirectedBond(*product, pBond->getEndAtom());
+    if (startDirBond != nullptr && endDirBond != nullptr) {
+      translateProductStereoBondDirections(pBond, startDirBond, endDirBond);
+    }
+  }
+}
+}  // namespace
 
 void addReactantAtomsAndBonds(const ChemicalReaction &rxn, RWMOL_SPTR product,
                               const ROMOL_SPTR reactantSptr,
@@ -1845,6 +1909,10 @@ generateOneProductSet(const ChemicalReaction &rxn,
     }
 
     unsigned int reactantId = 0;
+    boost::dynamic_bitset<> graftedTemplateBonds;
+    if (graftCache != nullptr) {
+      graftedTemplateBonds.resize(product->getNumBonds());
+    }
     for (auto iter = rxn.beginReactantTemplates();
          iter != rxn.endReactantTemplates(); ++iter, reactantId++) {
       if (graftCache != nullptr) {
@@ -1868,6 +1936,9 @@ generateOneProductSet(const ChemicalReaction &rxn,
                   .first;
         }
         applyReactantGraft(product, conf, cacheIt->second);
+        for (auto bondIdx : cacheIt->second.anchorBondIdxs) {
+          graftedTemplateBonds.set(bondIdx);
+        }
       } else {
         // No graft cache: assemble the product directly. This is the original
         // (upstream) code path and is byte-for-byte faithful to it; the
@@ -1877,6 +1948,11 @@ generateOneProductSet(const ChemicalReaction &rxn,
                                  reactantsMatch.at(reactantId), *iter, conf,
                                  reactantId);
       }
+    }
+
+    if (graftCache != nullptr) {
+      finalizeGraftedTemplateBondStereo(product, graftedTemplateBonds,
+                                        rxn.getNumReactantTemplates());
     }
 
     if (doConfs) {
