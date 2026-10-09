@@ -280,7 +280,9 @@ void testEnumerationCacheOutputUnchanged() {
   rxn->initReactantMatchers();
   EnumerationTypes::BBS bbs = makeEnumerationCacheBbs();
 
-  EnumerateLibrary cached(*rxn, bbs);
+  EnumerationParams cacheParams;
+  cacheParams.cacheMode = ReactantCacheMode::MatchOnly;
+  EnumerateLibrary cached(*rxn, bbs, cacheParams);
   EnumerateLibrary viaLibrary(*rxn, bbs);
 
   // drive the non-cached baseline from the library's filtered reagents so the
@@ -291,6 +293,8 @@ void testEnumerationCacheOutputUnchanged() {
   const std::multiset<std::string> viaLibraryResults =
       collectEnumerationSmiles(viaLibrary);
 
+  TEST_ASSERT(cached.getMatchCacheSize() > 0);
+  TEST_ASSERT(viaLibrary.getMatchCacheSize() == 0);
   TEST_ASSERT(cachedResults == expected);
   TEST_ASSERT(viaLibraryResults == expected);
 }
@@ -384,13 +388,19 @@ void testEnumerationCacheReuseAcrossReset() {
   rxn->initReactantMatchers();
   EnumerationTypes::BBS bbs = makeEnumerationCacheBbs();
 
-  EnumerateLibrary en(*rxn, bbs);
+  EnumerationParams cacheParams;
+  cacheParams.cacheMode = ReactantCacheMode::MatchOnly;
+  EnumerateLibrary en(*rxn, bbs, cacheParams);
   const std::vector<std::string> firstPass = collectEnumerationSequence(en);
+  const size_t cacheSizeAfterFirstPass = en.getMatchCacheSize();
+  TEST_ASSERT(cacheSizeAfterFirstPass > 0);
 
   en.reset();
 
   const std::vector<std::string> secondPass = collectEnumerationSequence(en);
   TEST_ASSERT(firstPass == secondPass);
+  // the second pass is served entirely from the cache
+  TEST_ASSERT(en.getMatchCacheSize() == cacheSizeAfterFirstPass);
 }
 
 void testDedupOutputUnchangedWhenDisabled() {
@@ -466,15 +476,21 @@ void testEnumerationCacheNotSerialized() {
   rxn->initReactantMatchers();
   EnumerationTypes::BBS bbs = makeEnumerationCacheBbs();
 
-  EnumerateLibrary en(*rxn, bbs);
+  EnumerationParams cacheParams;
+  cacheParams.cacheMode = ReactantCacheMode::MatchOnly;
+  EnumerateLibrary en(*rxn, bbs, cacheParams);
   const std::vector<std::string> baseline = collectEnumerationSequence(en);
+  TEST_ASSERT(en.getMatchCacheSize() > 0);
 
   en.reset();
   std::string serialized = en.Serialize();
   EnumerateLibrary reloaded(serialized);
 
+  TEST_ASSERT(reloaded.getCacheMode() == ReactantCacheMode::MatchOnly);
+  TEST_ASSERT(reloaded.getMatchCacheSize() == 0);
   const std::vector<std::string> reloadedSequence = collectEnumerationSequence(reloaded);
   TEST_ASSERT(reloadedSequence == baseline);
+  TEST_ASSERT(reloaded.getMatchCacheSize() > 0);
 }
 #else
 void testEnumerationCacheNotSerialized() {}
