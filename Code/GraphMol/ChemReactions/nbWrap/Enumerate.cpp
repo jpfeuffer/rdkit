@@ -12,6 +12,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <RDBoost/Wrap_nb.h>
+#include <RDBoost/boost_shared_ptr.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <GraphMol/ChemReactions/Enumerate/RandomSample.h>
 #include <GraphMol/ChemReactions/Enumerate/RandomSampleAllBBs.h>
